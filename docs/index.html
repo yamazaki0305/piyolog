@@ -114,9 +114,17 @@
           <option value="girl">女の子</option>
         </select>
       </div>
+      <div>
+        <label for="caller">親への呼びかけ</label>
+        <select id="caller">
+          <option value="">呼びかけない</option>
+          <option value="mama">ママ</option>
+          <option value="papa">パパ</option>
+        </select>
+      </div>
     </div>
     <p class="sub" id="age" style="margin:10px 0 0; font-size:14px"></p>
-    <p class="sub" style="margin:6px 0 0">名前・生年月日は、このブラウザにだけ保存されます。応援メッセージを作るとき、名前・月齢・性別が AI（OpenAI）に送られます（生年月日そのものは送りません）。</p>
+    <p class="sub" style="margin:6px 0 0">名前・生年月日は、このブラウザにだけ保存されます。応援メッセージを作るとき、名前・月齢・性別・呼びかけが AI（OpenAI）に送られます（生年月日そのものは送りません）。</p>
   </section>
 
   <button id="load">ぴよログ読み込み</button>
@@ -216,7 +224,7 @@ function ageLabel(a) {
 const PROFILE_KEY = "piyolog.profile";
 
 function currentProfile() {
-  return { name: $("baby-name").value.trim(), birth_date: $("birth").value, gender: $("gender").value };
+  return { name: $("baby-name").value.trim(), birth_date: $("birth").value, gender: $("gender").value, caller: $("caller").value };
 }
 function updateAge() {
   const birth = $("birth").value;
@@ -233,10 +241,11 @@ function loadProfile() {
     $("baby-name").value = p.name ?? "";
     $("birth").value = p.birth_date ?? "";
     $("gender").value = p.gender ?? "";
+    $("caller").value = p.caller ?? "";
   } catch {}
   updateAge();
 }
-for (const id of ["baby-name", "birth", "gender"]) $(id).addEventListener("input", saveProfile);
+for (const id of ["baby-name", "birth", "gender", "caller"]) $(id).addEventListener("input", saveProfile);
 
 // 設定の保存/復元（localStorageが使えない環境でも動くようにtry/catch）
 function loadSettings() {
@@ -317,7 +326,7 @@ function renderRecords(data) {
 }
 
 // 今回の生成で使ったトークン数と概算金額（関数が OpenAI の使用量から計算して返す）
-function renderUsage(u) {
+function renderUsage(u, guard) {
   const el = $("usage");
   if (!u) { el.textContent = ""; return; }
   const n = (v) => v.toLocaleString("ja-JP");
@@ -325,11 +334,14 @@ function renderUsage(u) {
   const cost = u.cost_usd == null
     ? "金額は不明（料金表にないモデル）"
     : `約 $${u.cost_usd.toFixed(4)}（約 ${(u.cost_usd * JPY_PER_USD).toFixed(2)} 円）`;
-  el.textContent = `今回の生成（${u.model}）: 入力 ${n(u.input_tokens)}${cached} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算`;
+  const check = guard?.retried
+    ? `　※数字チェックで記録にない数字が見つかり、作り直しました${guard.dropped ? `（それでも残った${guard.dropped}個のセリフは外しました）` : ""}`
+    : "";
+  el.textContent = `今回の生成（${u.model}）: 入力 ${n(u.input_tokens)}${cached} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算${check}`;
 }
 
 function renderSerifu(data) {
-  renderUsage(data.usage);
+  renderUsage(data.usage, data.guard);
   $("serifu").replaceChildren(...data.lines.map((l) => {
     const ch = CHARACTERS[l.speaker] ?? { emoji: "💬", name: l.speaker };
     const row = document.createElement("div");
@@ -348,7 +360,7 @@ function renderSerifu(data) {
     row.append(av, wrap);
     return row;
   }));
-  $("summary").textContent = JSON.stringify({ profile: data.profile, summary: data.summary }, null, 2);
+  $("summary").textContent = JSON.stringify({ profile: data.profile, summary: data.summary, guard: data.guard }, null, 2);
   $("serifu-box").hidden = false;
 }
 
