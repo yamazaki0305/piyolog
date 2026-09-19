@@ -13,6 +13,7 @@
 //   {"hours": 24, "profile": {"name": "はると", "birth_date": "2026-01-15", "gender": "boy", "caller": "mama"}}
 //   profile は任意。gender は "boy" | "girl"、caller（親への呼びかけ）は "mama" | "papa"。
 //   月齢は生年月日からここで計算し、生年月日そのものはLLMに送らない
+//   records（任意）: ぴよログの記録の配列を直接渡すと、DBを使わずにその記録で生成する（品質チェック用。保存しない）
 // 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }],
 //   trivia: [{ animal: "usagi" | "kuma", text }], usage, guard }
 //   guard は数字チェックの結果（作り直したか、外したセリフの数）
@@ -464,6 +465,27 @@ async function generateChecked(
 
 // ---- エントリポイント ---------------------------------------------------------
 
+const MAX_TEST_RECORDS = 200;
+
+// 品質チェック用に、記録を直接受け取る。DBには保存しない。件数とメモの長さを絞る
+function parseTestRecords(raw: unknown): PiyoLogRow[] | null {
+  if (!Array.isArray(raw)) return null;
+  const rows: PiyoLogRow[] = [];
+  raw.slice(0, MAX_TEST_RECORDS).forEach((r, i) => {
+    if (!r || typeof r !== "object") return;
+    const rec = r as Record<string, unknown>;
+    const at = typeof rec.datetime === "string" ? new Date(rec.datetime) : null;
+    if (!at || Number.isNaN(at.getTime()) || typeof rec.type !== "string") return;
+    rows.push({
+      event_id: String(rec.event_id ?? i),
+      datetime: at.toISOString(),
+      type: rec.type.slice(0, 40),
+      payload: { ...rec, memo: typeof rec.memo === "string" ? rec.memo.slice(0, 200) : undefined },
+    });
+  });
+  return rows.sort((a, b) => a.datetime.localeCompare(b.datetime));
+}
+
 // ブラウザ（webデモ）から呼べるようにするCORS設定
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -480,32 +502,39 @@ Deno.serve(async (req) => {
 
   let hours = DEFAULT_HOURS;
   let profile = parseProfile(undefined);
+  let testRows: PiyoLogRow[] | null = null;
   if (req.method === "POST") {
     const body = await req.json().catch(() => ({}));
     profile = parseProfile(body.profile);
+    testRows = parseTestRecords(body.records);
     if (typeof body.hours === "number" && body.hours > 0 && body.hours <= 24 * 28) {
       hours = body.hours;
     }
   }
 
-  const supabase = createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-  );
-
   const to = new Date();
   const from = new Date(to.getTime() - hours * 3600 * 1000);
 
-  const { data, error } = await supabase
-    .from("piyolog_records")
-    .select("event_id, datetime, type, payload")
-    .gte("datetime", from.toISOString())
-    .lte("datetime", to.toISOString())
-    .order("datetime", { ascending: true });
+  let rows: PiyoLogRow[];
+  if (testRows) {
+    rows = testRows; // 品質チェック用: DBは使わない
+  } else {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
 
-  if (error) return json({ ok: false, error: error.message }, 500);
+    const { data, error } = await supabase
+      .from("piyolog_records")
+      .select("event_id, datetime, type, payload")
+      .gte("datetime", from.toISOString())
+      .lte("datetime", to.toISOString())
+      .order("datetime", { ascending: true });
 
-  const rows = (data ?? []) as PiyoLogRow[];
+    if (error) return json({ ok: false, error: error.message }, 500);
+
+    rows = (data ?? []) as PiyoLogRow[];
+  }
   const summary = summarize(rows);
 
   try {
