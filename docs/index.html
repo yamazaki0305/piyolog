@@ -76,6 +76,10 @@
   .bubble.kuma { background: var(--kuma); }
   .bubble.usagi { background: var(--usagi); }
   .name { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .trivia { display: grid; gap: 10px; margin-top: 16px; }
+  .trivia-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--bg); }
+  .trivia-label { display: inline-block; font-size: 12px; font-weight: 600; color: #fff; background: #d98a8a; border-radius: 6px; padding: 2px 8px; margin-bottom: 6px; }
+  .trivia-card.kuma .trivia-label { background: #a98258; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -144,6 +148,7 @@
   <section id="serifu-box" hidden>
     <h2>② 応援メッセージ</h2>
     <div id="serifu"></div>
+    <div class="trivia" id="trivia"></div>
     <p class="sub" id="usage" style="margin:12px 0 0"></p>
     <details style="margin-top:8px">
       <summary>LLMに渡した情報（確認用）</summary>
@@ -166,6 +171,7 @@ const TYPE_LABEL = {
   Chest: "胸囲", Foot: "足サイズ", Poop: "うんち", Sleep: "寝る", WakeUp: "起きる",
   Pee: "おしっこ", Solid: "離乳食", Snack: "おやつ", Meal: "ごはん",
 };
+const TRIVIA_LABEL = { usagi: "🐰 うさぎの豆知識", kuma: "🐻 くまの豆知識" };
 const CHARACTERS = {
   kuma:  { emoji: "🐻", name: "くま" },
   usagi: { emoji: "🐰", name: "うさぎ" },
@@ -340,7 +346,23 @@ function renderUsage(u, guard) {
   el.textContent = `今回の生成（${u.model}）: 入力 ${n(u.input_tokens)}${cached} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算${check}`;
 }
 
+// 会話とは別に出す、動物の豆知識カード
+function renderTrivia(items) {
+  $("trivia").replaceChildren(...(items ?? []).map((t) => {
+    const card = document.createElement("div");
+    card.className = `trivia-card ${t.animal}`;
+    const label = document.createElement("div");
+    label.className = "trivia-label";
+    label.textContent = TRIVIA_LABEL[t.animal] ?? "豆知識";
+    const text = document.createElement("div");
+    text.textContent = t.text;
+    card.append(label, text);
+    return card;
+  }));
+}
+
 function renderSerifu(data) {
+  renderTrivia(data.trivia);
   renderUsage(data.usage, data.guard);
   $("serifu").replaceChildren(...data.lines.map((l) => {
     const ch = CHARACTERS[l.speaker] ?? { emoji: "💬", name: l.speaker };

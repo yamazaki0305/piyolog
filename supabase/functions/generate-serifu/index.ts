@@ -13,7 +13,8 @@
 //   {"hours": 24, "profile": {"name": "はると", "birth_date": "2026-01-15", "gender": "boy", "caller": "mama"}}
 //   profile は任意。gender は "boy" | "girl"、caller（親への呼びかけ）は "mama" | "papa"。
 //   月齢は生年月日からここで計算し、生年月日そのものはLLMに送らない
-// 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }], usage, guard }
+// 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }],
+//   trivia: [{ animal: "usagi" | "kuma", text }], usage, guard }
 //   guard は数字チェックの結果（作り直したか、外したセリフの数）
 //   usage は使ったトークン数と概算金額（USD）。料金表（PRICES）にないモデルでは cost_usd が null
 //
@@ -36,6 +37,12 @@ interface PiyoLogRow {
 
 interface Serifu {
   speaker: "kuma" | "usagi";
+  text: string;
+}
+
+// 会話とは別に出す、動物の豆知識カード
+interface Trivia {
+  animal: "usagi" | "kuma";
   text: string;
 }
 
@@ -179,7 +186,7 @@ function profileText(p: Profile): string {
 // ---- LLM --------------------------------------------------------------------
 
 const SYSTEM_PROMPT = `あなたは育児記録アプリに登場する2匹のキャラクターのセリフを書く脚本家です。
-渡された「今日の記録」をもとに、2匹が親に語りかけ、応援する会話を作ってください。2匹もそれぞれ自分の子どもを育てている、子育て仲間です。読む親は育児で疲れています。責められたり、評価されたりしているように感じない、あたたかい言葉にしてください。
+渡された「今日の記録」をもとに、2匹が親に語りかけ、応援する会話（lines）と、動物の豆知識カード（trivia）を作ってください。2匹もそれぞれ自分の子どもを育てている、子育て仲間です。読む親は育児で疲れています。責められたり、評価されたりしているように感じない、あたたかい言葉にしてください。
 
 キャラクター:
 - kuma（くま）: おだやかで落ち着いたおじいちゃん口調（「〜じゃ」「〜のう」「〜じゃな」）。ゆっくり、あたたかく。親のがんばりをねぎらう。自分の子育てを、昔を思い出すように話す。
@@ -195,12 +202,19 @@ const SYSTEM_PROMPT = `あなたは育児記録アプリに登場する2匹の�
 - kuma と usagi の子どもは、この赤ちゃんと同じくらいの発達段階にいる。「うちの子も同じくらいの赤ちゃんなんだ」のように話してよい。自分の子の月齢・年齢・生まれてからの期間は言わない（「◯か月」「◯歳」「◯週間」のような言い方を使わない）。
 - その動物の実際の生態に沿った、日常のささやかなエピソードにする。親としての気持ちは人間と同じでよいが、育児の中身（食べ物・寝床・世話の仕方）は、その動物のものにする。
 - 人間の育児（人間の離乳食、ミルク、おむつ、ベビーカー、寝かしつけなど）を、自分の子の話にそのまま当てはめない。今日の記録の内容も、自分の子の話に移さない。
-- 生態の説明や豆知識の披露にしない。1つのセリフで生態を説明しきらず、親の気持ちにつなげる。
+- 会話（lines）の中では、生態の説明や豆知識の披露にしない。豆知識は、別の trivia に書く。会話では、1つのセリフで生態を説明しきらず、親の気持ちにつなげる。
 - 自分たちの子どもと、この赤ちゃんを比べない。成長の評価や、育児のやり方の指示・助言もしない。「この月齢ならこれができるはず」のような、発達の目安の言い方もしない。
 - 自分たちの子育ての話に、数字は使わない。作り話でよいが、この赤ちゃんについての事実として語らない。
-- usagi（うさぎ）の子育ての生態: 巣穴を掘り、自分の毛を抜いて巣に敷く。子うさぎは、生まれたては毛がなく、目も耳も閉じている。親うさぎは、ふだんは巣から離れていて、授乳は短い時間だけ。子うさぎは巣の中でじっと静かに待つ。大きくなると、草・干し草・野菜を食べ始める。
-- kuma（くま）の子育ての生態: 冬ごもり（冬眠）中の巣穴で子グマを産む。子グマはとても小さく生まれ、母乳で育つ。春に穴から出たあとも、長い間、親と一緒に暮らす。親グマは、木の実・ベリー・山菜・はちみつ・魚・昆虫などの食べ物の探し方や、木登りを教える。
-- 自分たちの子育ての話は、上の生態の範囲で話し、それ以外の生態は書かない。
+
+豆知識カード（trivia。会話とは別に出す）:
+- usagi と kuma の豆知識を、1つずつ、この順で入れる。それぞれのキャラクターの口調で書く。
+- 豆知識は、下の「動物の生態メモ」から1つ選び、短く（全角80文字以内・2文以内）書く。メモにないことは書かない。
+- 今日の記録（授乳、離乳食、睡眠など）に近い話題を選ぶ。その動物の親の話と、今日の親のがんばりを結びつけ、親をねぎらう一言で終える（例: うさぎの親は、授乳のとき以外は巣を離れているんだって。ずっとそばで世話をするあなたは、本当にえらいね）。
+- 赤ちゃんの成長や発達を、動物と比べたり評価したりしない。数字は使わない。
+
+動物の生態メモ（自分たちの子育ての話と、豆知識は、ここにある範囲で書く。ここにないことは書かない）:
+- うさぎ: 巣穴を掘り、自分の毛を抜いて巣に敷く。子うさぎは、生まれたては毛がなく、目も耳も閉じている。親うさぎは、ふだんは巣から離れていて、授乳は短い時間だけ。子うさぎは巣の中でじっと静かに待つ。大きくなると、草・干し草・野菜を食べ始める。歯は一生伸び続け、かたい草や干し草をかんですり減らす。長い耳は、小さな音を聞き取るほか、体の熱を逃がす役目もある。
+- くま: 冬ごもり（冬眠）中の巣穴で子グマを産む。子グマはとても小さく生まれ、母乳で育つ。冬ごもり中の母グマは、食べも飲みもせず、体にためた脂肪で子グマに母乳をあげる。クマの母乳は脂肪が多く、とても栄養が濃い。春に穴から出たあとも、長い間、親と一緒に暮らす。親グマは、木の実・ベリー・山菜・はちみつ・魚・昆虫などの食べ物の探し方や、木登りを教える。鼻がとてもよく利き、食べ物の場所を、においで見つける。子グマは木登りが得意。
 
 ルール:
 - 回数や量の読み上げはしない（「ミルクを4回」「おしっこ6回」のような言い方）。記録は、親がすでに知っている。数字は使わなくてよい。使うときは、<facts>、<memos>、<profile> にある値だけにする。計算し直したり、推測で足したりしない。<facts> で null の項目には触れない。時刻は言わず、「お昼ごろ」「夜」などにする。
@@ -228,8 +242,20 @@ const OUTPUT_SCHEMA = {
         additionalProperties: false,
       },
     },
+    trivia: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          animal: { type: "string", enum: ["usagi", "kuma"] },
+          text: { type: "string" },
+        },
+        required: ["animal", "text"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["lines"],
+  required: ["lines", "trivia"],
   additionalProperties: false,
 };
 
@@ -277,7 +303,7 @@ async function generateLines(
   summary: ReturnType<typeof summarize>,
   events: string[],
   feedback?: string,
-): Promise<{ lines: Serifu[]; usage: Usage | null }> {
+): Promise<{ lines: Serifu[]; trivia: Trivia[]; usage: Usage | null }> {
   const { memos, ...facts } = summary;
 
   const userContent = `直近${hours}時間の記録から、セリフを作ってください。
@@ -320,8 +346,8 @@ ${memos.join("\n") || "（なし）"}
   }
   if (!choice.message.content) throw new Error("LLMの応答にテキストがありません");
 
-  const { lines } = JSON.parse(choice.message.content) as { lines: Serifu[] };
-  return { lines, usage: toUsage(completion.model || MODEL, completion.usage) };
+  const { lines, trivia } = JSON.parse(choice.message.content) as { lines: Serifu[]; trivia: Trivia[] };
+  return { lines, trivia, usage: toUsage(completion.model || MODEL, completion.usage) };
 }
 
 // ---- 数字のチェック -----------------------------------------------------------
@@ -359,10 +385,10 @@ function allowedNumbers(...sources: string[]): Set<number> {
   return set;
 }
 
-function badLines(lines: Serifu[], allowed: Set<number>): { index: number; numbers: number[] }[] {
+function badItems(items: { text: string }[], allowed: Set<number>): { index: number; numbers: number[] }[] {
   const bad: { index: number; numbers: number[] }[] = [];
-  lines.forEach((l, index) => {
-    const numbers = quantities(l.text).filter((n) => !allowed.has(n));
+  items.forEach((item, index) => {
+    const numbers = quantities(item.text).filter((n) => !allowed.has(n));
     if (numbers.length > 0) bad.push({ index, numbers });
   });
   return bad;
@@ -396,12 +422,13 @@ async function generateChecked(
   );
 
   let result = await generateLines(openai, profile, hours, summary, events);
-  let bad = badLines(result.lines, allowed);
+  let badL = badItems(result.lines, allowed);
+  let badT = badItems(result.trivia, allowed);
   let retried = false;
 
-  if (bad.length > 0) {
+  if (badL.length + badT.length > 0) {
     retried = true;
-    const wrong = [...new Set(bad.flatMap((b) => b.numbers))].join("、");
+    const wrong = [...new Set([...badL, ...badT].flatMap((b) => b.numbers))].join("、");
     try {
       const retry = await generateLines(
         openai,
@@ -412,15 +439,26 @@ async function generateChecked(
         "前回の出力に、記録にない数字（" + wrong +
           "）がありました。数字は <facts>・<memos>・<profile> にあるものだけを使い、回数の読み上げはやめてください。",
       );
-      result = { lines: retry.lines, usage: addUsage(result.usage, retry.usage) };
-      bad = badLines(result.lines, allowed);
+      result = {
+        lines: retry.lines,
+        trivia: retry.trivia,
+        usage: addUsage(result.usage, retry.usage),
+      };
+      badL = badItems(result.lines, allowed);
+      badT = badItems(result.trivia, allowed);
     } catch {
-      // 作り直しに失敗したら、最初の結果から問題のセリフを外す
+      // 作り直しに失敗したら、最初の結果から問題のものを外す
     }
   }
 
-  const lines = result.lines.filter((_, i) => !bad.some((b) => b.index === i));
-  return { lines, usage: result.usage, guard: { retried, dropped: bad.length } };
+  const lines = result.lines.filter((_, i) => !badL.some((b) => b.index === i));
+  const trivia = result.trivia.filter((_, i) => !badT.some((b) => b.index === i));
+  return {
+    lines,
+    trivia,
+    usage: result.usage,
+    guard: { retried, dropped: badL.length + badT.length },
+  };
 }
 
 // ---- エントリポイント ---------------------------------------------------------
@@ -470,7 +508,7 @@ Deno.serve(async (req) => {
   const summary = summarize(rows);
 
   try {
-    const { lines, usage, guard } = await generateChecked(
+    const { lines, trivia, usage, guard } = await generateChecked(
       new OpenAI({ apiKey }),
       profile,
       hours,
@@ -484,6 +522,7 @@ Deno.serve(async (req) => {
       profile,
       summary,
       lines,
+      trivia,
       usage,
       guard,
     });
