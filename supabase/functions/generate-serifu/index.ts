@@ -12,7 +12,8 @@
 // 呼び出し例: POST /functions/v1/generate-serifu
 //   {"hours": 24, "profile": {"name": "はると", "birth_date": "2026-01-15", "gender": "boy"}}
 //   profile は任意。gender は "boy" | "girl"。月齢は生年月日からここで計算し、生年月日そのものはLLMに送らない
-// 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }] }
+// 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }], usage }
+//   usage は使ったトークン数と概算金額（USD）。料金表（PRICES）にないモデルでは cost_usd が null
 //
 // 数の集計（回数・ml・睡眠時間）はコードで確定させ、LLMには「事実」として渡します。
 // LLMに数えさせると間違えるため、LLMの仕事は言い回しを作ることだけにしています。
@@ -215,13 +216,50 @@ const OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+// 100万トークンあたりの料金（USD）。画面表示用の概算。OpenAIの公式料金表で確認した値
+const PRICES: Record<string, { input: number; cachedInput: number; output: number }> = {
+  "gpt-4.1-mini": { input: 0.4, cachedInput: 0.1, output: 1.6 },
+};
+
+interface Usage {
+  model: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+}
+
+interface RawUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  prompt_tokens_details?: { cached_tokens?: number } | null;
+}
+
+function toUsage(model: string, u: RawUsage | undefined): Usage | null {
+  if (!u) return null;
+  const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
+  const key = Object.keys(PRICES).find((k) => model.startsWith(k));
+  const price = key ? PRICES[key] : null;
+  const cost = price
+    ? ((u.prompt_tokens - cached) * price.input + cached * price.cachedInput +
+      u.completion_tokens * price.output) / 1_000_000
+    : null;
+  return {
+    model,
+    input_tokens: u.prompt_tokens,
+    cached_input_tokens: cached,
+    output_tokens: u.completion_tokens,
+    cost_usd: cost,
+  };
+}
+
 async function generateLines(
   openai: OpenAI,
   profile: Profile,
   hours: number,
   summary: ReturnType<typeof summarize>,
   events: string[],
-): Promise<Serifu[]> {
+): Promise<{ lines: Serifu[]; usage: Usage | null }> {
   const { memos, ...facts } = summary;
 
   const userContent = `直近${hours}時間の記録から、セリフを作ってください。
@@ -264,7 +302,8 @@ ${memos.join("\n") || "（なし）"}
   }
   if (!choice.message.content) throw new Error("LLMの応答にテキストがありません");
 
-  return (JSON.parse(choice.message.content) as { lines: Serifu[] }).lines;
+  const { lines } = JSON.parse(choice.message.content) as { lines: Serifu[] };
+  return { lines, usage: toUsage(completion.model || MODEL, completion.usage) };
 }
 
 // ---- エントリポイント ---------------------------------------------------------
@@ -314,7 +353,7 @@ Deno.serve(async (req) => {
   const summary = summarize(rows);
 
   try {
-    const lines = await generateLines(
+    const { lines, usage } = await generateLines(
       new OpenAI({ apiKey }),
       profile,
       hours,
@@ -328,6 +367,7 @@ Deno.serve(async (req) => {
       profile,
       summary,
       lines,
+      usage,
     });
   } catch (err) {
     const message = err instanceof OpenAI.APIError

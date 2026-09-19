@@ -136,6 +136,7 @@
   <section id="serifu-box" hidden>
     <h2>② 応援メッセージ</h2>
     <div id="serifu"></div>
+    <p class="sub" id="usage" style="margin:12px 0 0"></p>
     <details style="margin-top:8px">
       <summary>LLMに渡した情報（確認用）</summary>
       <pre id="summary" style="font-size:12px; overflow:auto"></pre>
@@ -149,6 +150,7 @@ const $ = (id) => document.getElementById(id);
 // Edge Function の URL 上の名前（slug）。ダッシュボードの関数一覧で表示名と違うことがある
 const FN_FETCH = "quick-function";      // 表示名: fetch-piyolog
 const FN_SERIFU = "generate-serifu";
+const JPY_PER_USD = 155;   // 金額表示の円換算レート（概算）
 
 const TYPE_LABEL = {
   Formula: "ミルク", BreastFeeding: "母乳", ExpressedBreastMilk: "搾母乳", Pumping: "搾乳",
@@ -314,7 +316,20 @@ function renderRecords(data) {
   $("records-box").hidden = false;
 }
 
+// 今回の生成で使ったトークン数と概算金額（関数が OpenAI の使用量から計算して返す）
+function renderUsage(u) {
+  const el = $("usage");
+  if (!u) { el.textContent = ""; return; }
+  const n = (v) => v.toLocaleString("ja-JP");
+  const cached = u.cached_input_tokens ? `（うちキャッシュ ${n(u.cached_input_tokens)}）` : "";
+  const cost = u.cost_usd == null
+    ? "金額は不明（料金表にないモデル）"
+    : `約 $${u.cost_usd.toFixed(4)}（約 ${(u.cost_usd * JPY_PER_USD).toFixed(2)} 円）`;
+  el.textContent = `今回の生成（${u.model}）: 入力 ${n(u.input_tokens)}${cached} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算`;
+}
+
 function renderSerifu(data) {
+  renderUsage(data.usage);
   $("serifu").replaceChildren(...data.lines.map((l) => {
     const ch = CHARACTERS[l.speaker] ?? { emoji: "💬", name: l.speaker };
     const row = document.createElement("div");
