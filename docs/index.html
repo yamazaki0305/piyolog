@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ぴよログ 応援デモ</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --card: #ffffff;
+    --text: #2f2a26;
+    --muted: #8a8178;
+    --line: #eae3d9;
+    --accent: #e8913a;
+    --accent-text: #ffffff;
+    --kuma: #f3e4d0;
+    --usagi: #fde3ea;
+    --error: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f1c19;
+      --card: #2a2622;
+      --text: #f0ebe4;
+      --muted: #a39a90;
+      --line: #3a352f;
+      --kuma: #4a3b2a;
+      --usagi: #4d3039;
+      --error: #ff7a6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px 64px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
+  section {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px; margin-bottom: 16px;
+  }
+  details summary { cursor: pointer; font-size: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  input {
+    width: 100%; padding: 8px 10px; font-size: 13px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font-family: ui-monospace, monospace;
+  }
+  button#load {
+    width: 100%; padding: 14px; font-size: 16px; font-weight: 600;
+    border: 0; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text);
+  }
+  button#load:disabled { opacity: .6; cursor: wait; }
+  .status { font-size: 13px; color: var(--muted); margin: 10px 0 0; min-height: 1.4em; }
+  .error { color: var(--error); white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.time { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+  td.type { white-space: nowrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chip { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  .scroll { max-height: 320px; overflow-y: auto; }
+  .bubble-row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+  .avatar { font-size: 32px; line-height: 1; }
+  .bubble { padding: 10px 14px; border-radius: 14px; max-width: 85%; }
+  .bubble.kuma { background: var(--kuma); }
+  .bubble.usagi { background: var(--usagi); }
+  .name { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ぴよログ 応援デモ</h1>
+  <p class="sub">記録を読み込み → くまとうさぎが応援メッセージを作ります</p>
+
+  <section>
+    <details id="settings">
+      <summary>接続設定（Supabase）</summary>
+      <label for="url">Project URL</label>
+      <input id="url" placeholder="https://xxxx.supabase.co" autocomplete="off">
+      <label for="key">anon key（公開キー）</label>
+      <input id="key" placeholder="eyJ..." autocomplete="off">
+      <p class="sub" style="margin:8px 0 0">このブラウザ内（localStorage）にだけ保存されます。</p>
+    </details>
+  </section>
+
+  <button id="load">ぴよログ読み込み</button>
+  <p class="status" id="status"></p>
+
+  <section id="records-box" hidden>
+    <h2>① ぴよログの記録 <span id="range" class="sub"></span></h2>
+    <div class="chips" id="chips"></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>時刻</th><th>種類</th><th>内容</th></tr></thead>
+        <tbody id="records"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="serifu-box" hidden>
+    <h2>② 応援メッセージ</h2>
+    <div id="serifu"></div>
+    <details style="margin-top:8px">
+      <summary>LLMに渡した集計（確認用）</summary>
+      <pre id="summary" style="font-size:12px; overflow:auto"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// Edge Function の URL 上の名前（slug）。ダッシュボードの関数一覧で表示名と違うことがある
+const FN_FETCH = "quick-function";      // 表示名: fetch-piyolog
+const FN_SERIFU = "generate-serifu";
+
+const TYPE_LABEL = {
+  Formula: "ミルク", BreastFeeding: "母乳", ExpressedBreastMilk: "搾母乳", Pumping: "搾乳",
+  Drink: "のみもの", Temperature: "体温", Height: "身長", Weight: "体重", Head: "頭囲",
+  Chest: "胸囲", Foot: "足サイズ", Poop: "うんち", Sleep: "寝る", WakeUp: "起きる",
+  Pee: "おしっこ", Solid: "離乳食", Snack: "おやつ", Meal: "ごはん",
+};
+const CHARACTERS = {
+  kuma:  { emoji: "🐻", name: "くま" },
+  usagi: { emoji: "🐰", name: "うさぎ" },
+};
+
+const fmt = new Intl.DateTimeFormat("ja-JP", {
+  timeZone: "Asia/Tokyo", month: "numeric", day: "numeric",
+  hour: "2-digit", minute: "2-digit", hour12: false,
+});
+
+// value は数値、または {value, unit} のどちらでも読む
+const num = (v) => typeof v === "number" ? v
+  : (v && typeof v === "object" && "value" in v) ? num(v.value) : null;
+
+function detail(r) {
+  const parts = [];
+  const v = num(r.value);
+  const unit = { Formula: "ml", ExpressedBreastMilk: "ml", Pumping: "ml", Drink: "ml",
+    Temperature: "℃", Weight: "kg", Height: "cm", Head: "cm", Chest: "cm" }[r.type];
+  if (v !== null && unit) parts.push(`${v}${unit}`);
+  if (r.type === "BreastFeeding") {
+    const l = num(r.leftTime), rt = num(r.rightTime);
+    if (l !== null) parts.push(`左 ${Math.round(l / 60)}分`);
+    if (rt !== null) parts.push(`右 ${Math.round(rt / 60)}分`);
+  }
+  if (r.type === "Poop" && r.details) parts.push(JSON.stringify(r.details));
+  if (r.memo) parts.push(`📝 ${r.memo}`);
+  return parts.join("　");
+}
+
+// 設定の保存/復元（localStorageが使えない環境でも動くようにtry/catch）
+function loadSettings() {
+  try {
+    $("url").value = localStorage.getItem("piyolog.url") ?? "";
+    $("key").value = localStorage.getItem("piyolog.key") ?? "";
+  } catch {}
+  if (!$("url").value || !$("key").value) $("settings").open = true;
+}
+function saveSettings() {
+  try {
+    localStorage.setItem("piyolog.url", $("url").value.trim());
+    localStorage.setItem("piyolog.key", $("key").value.trim());
+  } catch {}
+}
+
+async function callFunction(name, body) {
+  const base = $("url").value.trim().replace(/\/$/, "");
+  const key = $("key").value.trim();
+  const endpoint = `${base}/functions/v1/${name}`;
+  let res;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch (e) {
+    // 関数が存在しない(404)・CORSエラー・ネット切断は、ブラウザ上どれも同じ「Failed to fetch」になる
+    throw new Error(`${endpoint}\nに接続できませんでした（${e.message}）\n関数名・デプロイ状況・ネット接続を確認してください`);
+  }
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = null; }
+  if (!res.ok || !data || data.ok === false) {
+    throw new Error(`${name} (HTTP ${res.status})\n${data?.error ?? text}`);
+  }
+  return data;
+}
+
+function setStatus(msg, isError = false) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (isError ? " error" : "");
+}
+
+function renderRecords(data) {
+  const records = [...data.records].sort((a, b) => b.datetime.localeCompare(a.datetime));
+
+  const counts = {};
+  for (const r of records) counts[r.type] = (counts[r.type] ?? 0) + 1;
+  $("chips").replaceChildren(...Object.entries(counts).map(([t, n]) => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = `${TYPE_LABEL[t] ?? t} ${n}`;
+    return c;
+  }));
+
+  $("range").textContent = data.range
+    ? `${fmt.format(new Date(data.range.from))} 〜 ${fmt.format(new Date(data.range.to))}（${records.length}件）`
+    : `${records.length}件`;
+
+  $("records").replaceChildren(...records.map((r) => {
+    const tr = document.createElement("tr");
+    for (const [cls, text] of [
+      ["time", fmt.format(new Date(r.datetime))],
+      ["type", TYPE_LABEL[r.type] ?? r.type],
+      ["", detail(r)],
+    ]) {
+      const td = document.createElement("td");
+      if (cls) td.className = cls;
+      td.textContent = text;   // 記録のメモ等はユーザー入力なので textContent で入れる
+      tr.append(td);
+    }
+    return tr;
+  }));
+  $("records-box").hidden = false;
+}
+
+function renderSerifu(data) {
+  $("serifu").replaceChildren(...data.lines.map((l) => {
+    const ch = CHARACTERS[l.speaker] ?? { emoji: "💬", name: l.speaker };
+    const row = document.createElement("div");
+    row.className = "bubble-row";
+    const av = document.createElement("div");
+    av.className = "avatar";
+    av.textContent = ch.emoji;
+    const wrap = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = ch.name;
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${l.speaker}`;
+    bubble.textContent = l.text;
+    wrap.append(name, bubble);
+    row.append(av, wrap);
+    return row;
+  }));
+  $("summary").textContent = JSON.stringify(data.summary, null, 2);
+  $("serifu-box").hidden = false;
+}
+
+$("load").addEventListener("click", async () => {
+  saveSettings();
+  if (!$("url").value.trim() || !$("key").value.trim()) {
+    $("settings").open = true;
+    setStatus("Project URL と anon key を入力してください", true);
+    return;
+  }
+  if (!/^https:\/\/[a-z0-9]+\.supabase\.co\/?$/.test($("url").value.trim())) {
+    $("settings").open = true;
+    setStatus("Project URL は https://xxxx.supabase.co の形で入力してください（ぴよログのURLや、=を含む行ではありません）", true);
+    return;
+  }
+  if (!/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test($("key").value.trim())) {
+    $("settings").open = true;
+    setStatus("anon key は eyJ から始まる長い1つの文字列です（Settings > API Keys > Legacy anon, service_role API keys タブ）", true);
+    return;
+  }
+  $("load").disabled = true;
+  $("records-box").hidden = true;
+  $("serifu-box").hidden = true;
+
+  try {
+    setStatus("ぴよログを読み込み中…");
+    const feed = await callFunction(FN_FETCH);
+    renderRecords(feed);
+
+    setStatus("くまとうさぎがメッセージを考え中…（数秒かかります）");
+    const serifu = await callFunction(FN_SERIFU);
+    renderSerifu(serifu);
+    setStatus("");
+  } catch (e) {
+    setStatus(String(e.message ?? e), true);
+  } finally {
+    $("load").disabled = false;
+  }
+});
+
+loadSettings();
+</script>
+</body>
+</html>

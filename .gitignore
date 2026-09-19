@@ -1,0 +1,7 @@
+# ローカル設定（ぴよログのsecretなどが入るため、絶対にコミットしない）
+.claude/
+.env
+.env.*
+!.env.example
+
+.DS_Store
