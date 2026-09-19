@@ -29,6 +29,7 @@
       --error: #ff7a6b;
     }
   }
+  :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 32px 16px 64px;
@@ -46,11 +47,13 @@
   }
   details summary { cursor: pointer; font-size: 14px; }
   label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
-  input {
+  input, select {
     width: 100%; padding: 8px 10px; font-size: 13px;
     border: 1px solid var(--line); border-radius: 8px;
     background: var(--bg); color: var(--text); font-family: ui-monospace, monospace;
   }
+  #profile input, #profile select { font-family: inherit; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 14px; }
   button#load {
     width: 100%; padding: 14px; font-size: 16px; font-weight: 600;
     border: 0; border-radius: 10px; cursor: pointer;
@@ -92,6 +95,30 @@
     </details>
   </section>
 
+  <section id="profile">
+    <h2>基本設定（赤ちゃん）</h2>
+    <div class="grid">
+      <div>
+        <label for="baby-name">名前</label>
+        <input id="baby-name" maxlength="20" placeholder="例: はると" autocomplete="off">
+      </div>
+      <div>
+        <label for="birth">生年月日</label>
+        <input id="birth" type="date">
+      </div>
+      <div>
+        <label for="gender">性別</label>
+        <select id="gender">
+          <option value="">選ばない</option>
+          <option value="boy">男の子</option>
+          <option value="girl">女の子</option>
+        </select>
+      </div>
+    </div>
+    <p class="sub" id="age" style="margin:10px 0 0; font-size:14px"></p>
+    <p class="sub" style="margin:6px 0 0">名前・生年月日は、このブラウザにだけ保存されます。応援メッセージを作るとき、名前・月齢・性別が AI（OpenAI）に送られます（生年月日そのものは送りません）。</p>
+  </section>
+
   <button id="load">ぴよログ読み込み</button>
   <p class="status" id="status"></p>
 
@@ -110,7 +137,7 @@
     <h2>② 応援メッセージ</h2>
     <div id="serifu"></div>
     <details style="margin-top:8px">
-      <summary>LLMに渡した集計（確認用）</summary>
+      <summary>LLMに渡した情報（確認用）</summary>
       <pre id="summary" style="font-size:12px; overflow:auto"></pre>
     </details>
   </section>
@@ -158,6 +185,56 @@ function detail(r) {
   if (r.memo) parts.push(`📝 ${r.memo}`);
   return parts.join("　");
 }
+
+// 月齢（満月数 + 端数の日数）。関数側（generate-serifu）と同じ計算。表示用
+const jstDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }); // YYYY-MM-DD
+
+function ageFrom(birth, today) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(birth);
+  if (!m) return null;
+  const [by, bm, bd] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (bm < 1 || bm > 12 || new Date(Date.UTC(by, bm - 1, bd)).getUTCDate() !== bd) return null;
+  const [ty, tm, td] = today.split("-").map(Number);
+  let months = (ty - by) * 12 + (tm - bm);
+  if (td < bd) months--;
+  if (months < 0) return null;
+  const ay = by + Math.floor((bm - 1 + months) / 12);
+  const am = ((bm - 1 + months) % 12) + 1;
+  const ad = Math.min(bd, new Date(Date.UTC(ay, am, 0)).getUTCDate());
+  const days = Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(ay, am - 1, ad)) / 86400000);
+  return { months, days };
+}
+function ageLabel(a) {
+  if (a.months === 0) return `生後${a.days}日`;
+  if (a.months < 12) return `生後${a.months}か月${a.days}日`;
+  return `${Math.floor(a.months / 12)}歳${a.months % 12}か月`;
+}
+
+// 基本設定（赤ちゃん）の保存/復元
+const PROFILE_KEY = "piyolog.profile";
+
+function currentProfile() {
+  return { name: $("baby-name").value.trim(), birth_date: $("birth").value, gender: $("gender").value };
+}
+function updateAge() {
+  const birth = $("birth").value;
+  const a = birth ? ageFrom(birth, jstDate.format(new Date())) : null;
+  $("age").textContent = a ? `月齢: ${ageLabel(a)}` : (birth ? "生年月日が正しくありません（未来の日付など）" : "");
+}
+function saveProfile() {
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(currentProfile())); } catch {}
+  updateAge();
+}
+function loadProfile() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "{}");
+    $("baby-name").value = p.name ?? "";
+    $("birth").value = p.birth_date ?? "";
+    $("gender").value = p.gender ?? "";
+  } catch {}
+  updateAge();
+}
+for (const id of ["baby-name", "birth", "gender"]) $(id).addEventListener("input", saveProfile);
 
 // 設定の保存/復元（localStorageが使えない環境でも動くようにtry/catch）
 function loadSettings() {
@@ -256,7 +333,7 @@ function renderSerifu(data) {
     row.append(av, wrap);
     return row;
   }));
-  $("summary").textContent = JSON.stringify(data.summary, null, 2);
+  $("summary").textContent = JSON.stringify({ profile: data.profile, summary: data.summary }, null, 2);
   $("serifu-box").hidden = false;
 }
 
@@ -287,7 +364,7 @@ $("load").addEventListener("click", async () => {
     renderRecords(feed);
 
     setStatus("くまとうさぎがメッセージを考え中…（数秒かかります）");
-    const serifu = await callFunction(FN_SERIFU);
+    const serifu = await callFunction(FN_SERIFU, { profile: currentProfile() });
     renderSerifu(serifu);
     setStatus("");
   } catch (e) {
@@ -298,6 +375,7 @@ $("load").addEventListener("click", async () => {
 });
 
 loadSettings();
+loadProfile();
 </script>
 </body>
 </html>
