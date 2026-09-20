@@ -233,7 +233,10 @@ function evaluate(sc, data) {
     const dup = ECO_WORDS.filter((k) => t.text.includes(k) && said.includes(k));
     if (dup.length) add("warn", "豆知識が会話と重複", `${t.animal}: 「${dup.join("、")}」`);
   });
-  if (data.guard?.retried) add("info", "数字チェックで作り直し", data.guard.dropped ? `それでも残った${data.guard.dropped}個を外した` : "作り直しで解消");
+  if (data.guard?.retried) {
+    const rest = [data.guard.dropped && `数字が残った${data.guard.dropped}個を外した`, data.guard.call_trimmed && `呼びかけを${data.guard.call_trimmed}個外した`].filter(Boolean);
+    add("info", `${(data.guard.reasons ?? ["数字"]).join("・")}チェックで作り直し`, rest.length ? `それでも残ったため、${rest.join("、")}` : "作り直しで解消");
+  }
   return issues;
 }
 

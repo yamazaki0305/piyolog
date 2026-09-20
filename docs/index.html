@@ -175,16 +175,12 @@
   <section id="diary">
     <h2>③ 絵日記をつくる</h2>
     <p class="sub" style="margin:0 0 4px">きょうのできごとを書くと、子どもの絵日記みたいなカードになります。
-      <button type="button" class="linkish" id="d-sample">れいぶんを入れる</button></p>
+      <button type="button" class="linkish" id="d-sample">ぴよログの記録から れいぶんを入れる</button></p>
     <p class="sub" style="margin:0 0 4px; font-size:12px">絵は AI（OpenAI）が作ります。文章と、基本設定の名前・月齢・性別が OpenAI に送られます（生年月日そのものは送りません）。1回の生成で約10円かかります。</p>
     <div class="grid">
       <div>
         <label for="d-date">ひにち</label>
         <input id="d-date" type="date">
-      </div>
-      <div>
-        <label for="d-name">なまえ</label>
-        <input id="d-name" maxlength="12" placeholder="例: はなの ももこ" autocomplete="off">
       </div>
     </div>
     <label for="d-text">にっきの ぶんしょう</label>
@@ -226,6 +222,8 @@ const CHARACTERS = {
   kuma:  { emoji: "🐻", name: "くま" },
   usagi: { emoji: "🐰", name: "うさぎ" },
 };
+
+let lastRecords = null;   // 直近に読み込んだぴよログの記録（絵日記の例文づくりに使う）
 
 const fmt = new Intl.DateTimeFormat("ja-JP", {
   timeZone: "Asia/Tokyo", month: "numeric", day: "numeric",
@@ -390,9 +388,13 @@ function renderUsage(u, guard) {
   const cost = u.cost_usd == null
     ? "金額は不明（料金表にないモデル）"
     : `約 $${u.cost_usd.toFixed(4)}（約 ${(u.cost_usd * JPY_PER_USD).toFixed(2)} 円）`;
-  const check = guard?.retried
-    ? `　※数字チェックで記録にない数字が見つかり、作り直しました${guard.dropped ? `（それでも残った${guard.dropped}個のセリフは外しました）` : ""}`
-    : "";
+  const notes = [];
+  if (guard?.retried) {
+    notes.push(`${(guard.reasons ?? ["数字"]).join("・")}のチェックで作り直しました`);
+    if (guard.dropped) notes.push(`それでも記録にない数字が残った${guard.dropped}個のセリフは外しました`);
+    if (guard.call_trimmed) notes.push(`それでも多かった呼びかけを${guard.call_trimmed}個外しました`);
+  }
+  const check = notes.length ? `　※${notes.join("。")}` : "";
   el.textContent = `今回の生成（${u.model}）: 入力 ${n(u.input_tokens)}${cached} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算${check}`;
 }
 
@@ -465,6 +467,7 @@ $("load").addEventListener("click", async () => {
   try {
     setStatus("ぴよログを読み込み中…");
     const feed = await callFunction(FN_FETCH);
+    lastRecords = feed.records;
     renderRecords(feed);
 
     setStatus("くまとうさぎがメッセージを考え中…（数秒かかります）");
@@ -697,7 +700,7 @@ async function makeDiary() {
     setStatus("にっきを かいています…", false, "d-status");
     await drawDiary({
       image, text,
-      name: $("d-name").value.trim() || $("baby-name").value.trim(),
+      name: $("baby-name").value.trim(),   // 名前は基本設定のものを使う
       date: $("d-date").value || jstDate.format(new Date()),
     });
     renderDiaryUsage(res.usage);
@@ -728,10 +731,39 @@ $("d-save").addEventListener("click", () => {
 $("d-text").addEventListener("input", () => {
   $("d-count").textContent = `${$("d-text").value.length} / ${$("d-text").maxLength}`;
 });
-$("d-sample").addEventListener("click", () => {
-  $("d-text").value = "きょうは、おふろでばしゃばしゃあそびました。あひるのおもちゃをつかんで、にこにこわらっていました。";
-  $("d-date").value = jstDate.format(new Date());
-  $("d-text").dispatchEvent(new Event("input"));
+// 記録にあることだけで、絵日記の例文を作る（気持ちや様子は、記録にないので書かない）
+function draftFromRecords(records) {
+  const by = (...types) => records.filter((r) => types.includes(r.type));
+  const parts = [];
+  const menu = [...new Set(by("Solid").map((r) => r.memo).filter(Boolean))].join("、").slice(0, 40);
+  if (menu) parts.push(`りにゅうしょくで、${menu}をたべました。`);
+  if (by("Bath").length) parts.push("おふろにはいりました。");
+  if (by("Walking").length) parts.push("おさんぽにいきました。");
+  const milk = by("Formula", "BreastFeeding", "ExpressedBreastMilk").length;
+  if (milk) parts.push(`ミルクやおっぱいを${milk}かいのみました。`);
+  const naps = by("Sleep").length;
+  if (naps) parts.push(`${naps}かい、ねんねしました。`);
+  return parts.length ? "きょうは、" + parts.slice(0, 3).join("") : "";
+}
+
+$("d-sample").addEventListener("click", async () => {
+  try {
+    if (!lastRecords) {   // まだ読み込んでいなければ、ここで読み込む
+      saveSettings();
+      const problem = settingsError();
+      if (problem) { $("settings").open = true; setStatus(problem, true, "d-status"); return; }
+      setStatus("ぴよログを読み込み中…", false, "d-status");
+      lastRecords = (await callFunction(FN_FETCH)).records;
+    }
+    const text = draftFromRecords(lastRecords);
+    if (!text) { setStatus("例文にできる記録がありませんでした。文章を自分で書いてください", true, "d-status"); return; }
+    $("d-text").value = text;
+    $("d-date").value = jstDate.format(new Date());
+    $("d-text").dispatchEvent(new Event("input"));
+    setStatus("", false, "d-status");
+  } catch (e) {
+    setStatus(String(e.message ?? e), true, "d-status");
+  }
 });
 $("d-date").value = jstDate.format(new Date());
 

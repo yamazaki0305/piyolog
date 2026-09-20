@@ -16,7 +16,7 @@
 //   records（任意）: ぴよログの記録の配列を直接渡すと、DBを使わずにその記録で生成する（品質チェック用。保存しない）
 // 返り値: { ok, range, profile, summary, lines: [{ speaker: "kuma" | "usagi", text }],
 //   trivia: [{ animal: "usagi" | "kuma", text }], usage, guard }
-//   guard は数字チェックの結果（作り直したか、外したセリフの数）
+//   guard はチェックの結果（作り直したか・その理由、外したセリフの数、呼びかけ回数と外した数）
 //   usage は使ったトークン数と概算金額（USD）。料金表（PRICES）にないモデルでは cost_usd が null
 //
 // 数の集計（回数・ml・睡眠時間）はコードで確定させ、LLMには「事実」として渡します。
@@ -407,7 +407,35 @@ function addUsage(a: Usage | null, b: Usage | null): Usage | null {
   };
 }
 
-// 生成 → 数字チェック → 記録にない数字があれば1回だけ作り直し → それでも残るセリフは外す
+// ---- 呼びかけ回数のチェック ---------------------------------------------------
+
+// プロンプトで「親への呼びかけは全体で2〜3回まで」と頼んでも守られないことがあるため、コードで数える。
+// 呼びかけの設定がないときは、0回にする（docs/eval.html の品質チェックと同じ数え方）
+const MAX_CALLS = 3;
+
+function countCalls(items: { text: string }[]): number {
+  return items.reduce((n, it) => n + (it.text.match(/ママ|パパ/g) ?? []).length, 0);
+}
+
+// 多いままのとき、文頭の「ママ、」のような呼びかけだけを、後ろのセリフから順に外す。
+// 「ママの〜」「ママは〜」のような文中の言葉は、外すと文が壊れるので触らない
+function trimCalls(lines: Serifu[], others: { text: string }[], limit: number) {
+  let over = countCalls([...lines, ...others]) - limit;
+  let trimmed = 0;
+  const out = lines.map((l) => ({ ...l }));
+  for (let i = out.length - 1; i >= 0 && over > 0; i--) {
+    const m = /^(?:ママ|パパ)[、，！!]\s*/.exec(out[i].text);
+    if (m && out[i].text.length > m[0].length) {
+      out[i].text = out[i].text.slice(m[0].length);
+      over--;
+      trimmed++;
+    }
+  }
+  return { lines: out, trimmed };
+}
+
+// 生成 → 数字・呼びかけ回数のチェック → 問題があれば1回だけ作り直し
+// → それでも残る数字入りのセリフは外し、多い呼びかけは文頭のものを外す
 async function generateChecked(
   openai: OpenAI,
   profile: Profile,
@@ -422,25 +450,37 @@ async function generateChecked(
     profile.age ?? "",
     events.map((e) => e.replace(/^\d{2}:\d{2} /, "")).join("\n"), // 時刻は除き、量（220mlなど）だけ見る
   );
+  const callLimit = profile.caller ? MAX_CALLS : 0;
 
   let result = await generateLines(openai, profile, hours, summary, events);
   let badL = badItems(result.lines, allowed);
   let badT = badItems(result.trivia, allowed);
-  let retried = false;
 
+  // 作り直しの理由（あればフィードバックとして、もう一度AIに伝える）
+  const reasons: string[] = [];
+  const feedback: string[] = [];
   if (badL.length + badT.length > 0) {
-    retried = true;
     const wrong = [...new Set([...badL, ...badT].flatMap((b) => b.numbers))].join("、");
+    reasons.push("数字");
+    feedback.push(
+      "前回の出力に、記録にない数字（" + wrong +
+        "）がありました。数字は <facts>・<memos>・<profile> にあるものだけを使い、回数の読み上げはやめてください。",
+    );
+  }
+  const calls = countCalls([...result.lines, ...result.trivia]);
+  if (calls > callLimit) {
+    reasons.push("呼びかけ");
+    feedback.push(
+      callLimit > 0
+        ? `前回の出力は、「ママ」「パパ」の呼びかけが${calls}回ありました。全体で${callLimit}回まで（毎回は呼ばない）にし、それ以外のセリフは、呼びかけずに話してください。`
+        : "<profile> に親への呼びかけがないので、「ママ」「パパ」と呼びかけないでください。",
+    );
+  }
+
+  const retried = feedback.length > 0;
+  if (retried) {
     try {
-      const retry = await generateLines(
-        openai,
-        profile,
-        hours,
-        summary,
-        events,
-        "前回の出力に、記録にない数字（" + wrong +
-          "）がありました。数字は <facts>・<memos>・<profile> にあるものだけを使い、回数の読み上げはやめてください。",
-      );
+      const retry = await generateLines(openai, profile, hours, summary, events, feedback.join("\n"));
       result = {
         lines: retry.lines,
         trivia: retry.trivia,
@@ -453,13 +493,20 @@ async function generateChecked(
     }
   }
 
-  const lines = result.lines.filter((_, i) => !badL.some((b) => b.index === i));
   const trivia = result.trivia.filter((_, i) => !badT.some((b) => b.index === i));
+  const kept = result.lines.filter((_, i) => !badL.some((b) => b.index === i));
+  const { lines, trimmed } = trimCalls(kept, trivia, callLimit);
   return {
     lines,
     trivia,
     usage: result.usage,
-    guard: { retried, dropped: badL.length + badT.length },
+    guard: {
+      retried,
+      reasons,
+      dropped: badL.length + badT.length,
+      call_count: countCalls([...lines, ...trivia]),
+      call_trimmed: trimmed,
+    },
   };
 }
 
