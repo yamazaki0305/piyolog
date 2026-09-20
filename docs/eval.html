@@ -88,6 +88,7 @@
   <div id="results"></div>
 </main>
 
+<script src="config.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const FN_SERIFU = "generate-serifu";
@@ -242,8 +243,10 @@ function evaluate(sc, data) {
 
 // ---- 実行 ----
 function settings() {
-  try { return { url: (localStorage.getItem("piyolog.url") ?? "").replace(/\/$/, ""), key: localStorage.getItem("piyolog.key") ?? "" }; }
-  catch { return { url: "", key: "" }; }
+  return connection(() => {
+    try { return { url: (localStorage.getItem("piyolog.url") ?? "").replace(/\/$/, ""), key: localStorage.getItem("piyolog.key") ?? "" }; }
+    catch { return { url: "", key: "" }; }
+  });
 }
 
 async function generate(sc) {

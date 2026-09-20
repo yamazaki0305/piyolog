@@ -104,7 +104,7 @@
   <h1>ぴよログ 応援デモ</h1>
   <p class="sub">記録を読み込み → くまとうさぎが応援メッセージを作ります</p>
 
-  <section>
+  <section id="conn">
     <details id="settings">
       <summary>接続設定（Supabase）</summary>
       <label for="url">Project URL</label>
@@ -202,6 +202,7 @@
   <p class="sub" style="margin-top:24px"><a href="eval.html">会話の品質チェック（開発用）</a></p>
 </main>
 
+<script src="config.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -303,6 +304,7 @@ for (const id of ["baby-name", "birth", "gender", "caller"]) $(id).addEventListe
 
 // 設定の保存/復元（localStorageが使えない環境でも動くようにtry/catch）
 function loadSettings() {
+  if (CONFIG.anonKey) { $("conn").hidden = true; return; }   // 接続先はコード（config.js）に記録済み
   try {
     $("url").value = localStorage.getItem("piyolog.url") ?? "";
     $("key").value = localStorage.getItem("piyolog.key") ?? "";
@@ -310,6 +312,7 @@ function loadSettings() {
   if (!$("url").value || !$("key").value) $("settings").open = true;
 }
 function saveSettings() {
+  if (CONFIG.anonKey) return;
   try {
     localStorage.setItem("piyolog.url", $("url").value.trim());
     localStorage.setItem("piyolog.key", $("key").value.trim());
@@ -317,9 +320,8 @@ function saveSettings() {
 }
 
 async function callFunction(name, body) {
-  const base = $("url").value.trim().replace(/\/$/, "");
-  const key = $("key").value.trim();
-  const endpoint = `${base}/functions/v1/${name}`;
+  const { url, key } = connection(() => ({ url: $("url").value.trim().replace(/\/$/, ""), key: $("key").value.trim() }));
+  const endpoint = `${url}/functions/v1/${name}`;
   let res;
   try {
     res = await fetch(endpoint, {
@@ -440,6 +442,7 @@ function renderSerifu(data) {
 
 // 接続設定の入力チェック。問題があれば、メッセージ（なければ null）を返す
 function settingsError() {
+  if (CONFIG.anonKey) return null;
   if (!$("url").value.trim() || !$("key").value.trim()) {
     return "Project URL と anon key を入力してください";
   }
