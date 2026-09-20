@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ぴよログ 応援デモ</title>
+<!-- 絵日記の文字用（子どもの手書き風フォント）。読み込めない場合は端末の丸ゴシックで代用します -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kurenaido&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #faf7f2;
@@ -47,19 +51,31 @@
   }
   details summary { cursor: pointer; font-size: 14px; }
   label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
-  input, select {
+  input, select, textarea {
     width: 100%; padding: 8px 10px; font-size: 13px;
     border: 1px solid var(--line); border-radius: 8px;
     background: var(--bg); color: var(--text); font-family: ui-monospace, monospace;
   }
-  #profile input, #profile select { font-family: inherit; font-size: 14px; }
+  #profile input, #profile select, #diary input, #diary textarea { font-family: inherit; font-size: 14px; }
+  #diary textarea { resize: vertical; line-height: 1.6; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 14px; }
-  button#load {
+  button#load, button#d-make {
     width: 100%; padding: 14px; font-size: 16px; font-weight: 600;
     border: 0; border-radius: 10px; cursor: pointer;
     background: var(--accent); color: var(--accent-text);
   }
-  button#load:disabled { opacity: .6; cursor: wait; }
+  button#load:disabled, button#d-make:disabled { opacity: .6; cursor: wait; }
+  .btn-sub {
+    padding: 10px 16px; font-size: 14px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  .linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+  #d-result { margin-top: 18px; }
+  #diary-canvas {
+    display: block; width: 100%; max-width: 440px; height: auto; margin: 0 auto;
+    border-radius: 4px; box-shadow: 0 3px 14px rgba(0, 0, 0, .22);
+  }
+  .d-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
   .status { font-size: 13px; color: var(--muted); margin: 10px 0 0; min-height: 1.4em; }
   .error { color: var(--error); white-space: pre-wrap; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -155,6 +171,38 @@
       <pre id="summary" style="font-size:12px; overflow:auto"></pre>
     </details>
   </section>
+
+  <section id="diary">
+    <h2>③ 絵日記をつくる</h2>
+    <p class="sub" style="margin:0 0 4px">きょうのできごとを書くと、子どもの絵日記みたいなカードになります。
+      <button type="button" class="linkish" id="d-sample">れいぶんを入れる</button></p>
+    <p class="sub" style="margin:0 0 4px; font-size:12px">絵は AI（OpenAI）が作ります。文章と、基本設定の名前・月齢・性別が OpenAI に送られます（生年月日そのものは送りません）。1回の生成で約10円かかります。</p>
+    <div class="grid">
+      <div>
+        <label for="d-date">ひにち</label>
+        <input id="d-date" type="date">
+      </div>
+      <div>
+        <label for="d-name">なまえ</label>
+        <input id="d-name" maxlength="12" placeholder="例: はなの ももこ" autocomplete="off">
+      </div>
+    </div>
+    <label for="d-text">にっきの ぶんしょう</label>
+    <textarea id="d-text" rows="5" maxlength="240" placeholder="例: きょうは、こうえんであそびました。すべりだいがたのしかったです。"></textarea>
+    <p class="sub" id="d-count" style="margin:4px 0 12px; text-align:right">0 / 240</p>
+    <button id="d-make">絵日記を作る</button>
+    <p class="status" id="d-status"></p>
+    <div id="d-result" hidden>
+      <canvas id="diary-canvas" width="900" height="1260" aria-label="できあがった絵日記"></canvas>
+      <div class="d-actions">
+        <button type="button" class="btn-sub" id="d-again">ちがう絵でかく</button>
+        <button type="button" class="btn-sub" id="d-save">画像を保存</button>
+      </div>
+      <p class="sub" id="d-scene" style="margin:12px 0 0; font-size:12px; white-space:pre-wrap"></p>
+      <p class="sub" id="d-usage" style="margin:6px 0 0; font-size:12px"></p>
+    </div>
+  </section>
+
   <p class="sub" style="margin-top:24px"><a href="eval.html">会話の品質チェック（開発用）</a></p>
 </main>
 
@@ -164,6 +212,7 @@ const $ = (id) => document.getElementById(id);
 // Edge Function の URL 上の名前（slug）。ダッシュボードの関数一覧で表示名と違うことがある
 const FN_FETCH = "quick-function";      // 表示名: fetch-piyolog
 const FN_SERIFU = "generate-serifu";
+const FN_DIARY = "quick-processor";     // 表示名: generate-diary-image
 const JPY_PER_USD = 155;   // 金額表示の円換算レート（概算）
 
 const TYPE_LABEL = {
@@ -293,8 +342,8 @@ async function callFunction(name, body) {
   return data;
 }
 
-function setStatus(msg, isError = false) {
-  const el = $("status");
+function setStatus(msg, isError = false, id = "status") {
+  const el = $(id);
   el.textContent = msg;
   el.className = "status" + (isError ? " error" : "");
 }
@@ -387,21 +436,26 @@ function renderSerifu(data) {
   $("serifu-box").hidden = false;
 }
 
-$("load").addEventListener("click", async () => {
-  saveSettings();
+// 接続設定の入力チェック。問題があれば、メッセージ（なければ null）を返す
+function settingsError() {
   if (!$("url").value.trim() || !$("key").value.trim()) {
-    $("settings").open = true;
-    setStatus("Project URL と anon key を入力してください", true);
-    return;
+    return "Project URL と anon key を入力してください";
   }
   if (!/^https:\/\/[a-z0-9]+\.supabase\.co\/?$/.test($("url").value.trim())) {
-    $("settings").open = true;
-    setStatus("Project URL は https://xxxx.supabase.co の形で入力してください（ぴよログのURLや、=を含む行ではありません）", true);
-    return;
+    return "Project URL は https://xxxx.supabase.co の形で入力してください（ぴよログのURLや、=を含む行ではありません）";
   }
   if (!/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test($("key").value.trim())) {
+    return "anon key は eyJ から始まる長い1つの文字列です（Settings > API Keys > Legacy anon, service_role API keys タブ）";
+  }
+  return null;
+}
+
+$("load").addEventListener("click", async () => {
+  saveSettings();
+  const problem = settingsError();
+  if (problem) {
     $("settings").open = true;
-    setStatus("anon key は eyJ から始まる長い1つの文字列です（Settings > API Keys > Legacy anon, service_role API keys タブ）", true);
+    setStatus(problem, true);
     return;
   }
   $("load").disabled = true;
@@ -423,6 +477,263 @@ $("load").addEventListener("click", async () => {
     $("load").disabled = false;
   }
 });
+
+// ---- 絵日記 -------------------------------------------------------------------
+// 絵の部分は Edge Function（OpenAI の画像生成）が作ります。
+// 日記の枠・縦書きの文章・日付・名前は、AI に描かせると文字が崩れやすいので、ここで Canvas に描きます。
+
+const DW = 900, DH = 1260;
+const PAPER = "#fffdf4", PENCIL = "#33302c", FRAME = "#3d3a36";
+const HAND = '"Zen Kurenaido", "Yomogi", "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif';
+const PIC = { x: 28, y: 28, w: 732, h: 500 };      // 絵の枠
+const BODY = { x: 28, y: 528, w: 732, h: 704 };    // 文章の枠（縦書き）
+const SIDE = { x: 776, y: 28, w: 96, h: 1204 };    // 右の「七がつ 六にち なまえ」の枠
+
+const jit = (n) => (Math.random() - 0.5) * 2 * n;
+
+// 少しゆれた、手で引いたような線
+function handLine(c, pts, lw = 4, color = FRAME) {
+  c.strokeStyle = color; c.lineCap = c.lineJoin = "round";
+  for (const [alpha, w, j] of [[0.9, lw, 1.3], [0.45, lw * 0.6, 1.8]]) {
+    c.globalAlpha = alpha; c.lineWidth = w; c.beginPath();
+    let first = true;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+      const n = Math.max(1, Math.round(Math.hypot(bx - ax, by - ay) / 24));
+      for (let k = i ? 1 : 0; k <= n; k++) {
+        const x = ax + (bx - ax) * k / n + jit(j), y = ay + (by - ay) * k / n + jit(j);
+        if (first) { c.moveTo(x, y); first = false; } else c.lineTo(x, y);
+      }
+    }
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+}
+const handRect = (c, x, y, w, h, lw) =>
+  handLine(c, [[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x - 1, y - 3]], lw);
+
+// 画用紙: 生成りの色、ふちのくすみ、細かい粒
+function paper(c) {
+  c.fillStyle = PAPER; c.fillRect(0, 0, DW, DH);
+  const g = c.createRadialGradient(DW / 2, DH / 2, DH * 0.35, DW / 2, DH / 2, DH * 0.78);
+  g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(1, "rgba(214,184,130,.3)");
+  c.fillStyle = g; c.fillRect(0, 0, DW, DH);
+  for (let i = 0; i < 2600; i++) {
+    c.fillStyle = `rgba(${120 + Math.random() * 40},${100 + Math.random() * 30},70,${0.03 + Math.random() * 0.06})`;
+    c.fillRect(Math.random() * DW, Math.random() * DH, 0.6 + Math.random() * 1.2, 0.6 + Math.random() * 1.2);
+  }
+  handRect(c, 10, 10, DW - 20, DH - 20, 3);
+}
+
+// AI が作った絵を枠にはめる（はみ出す分は切る）。クレヨンのかすれのような紙の粒を重ねる
+function drawPicture(c, img) {
+  c.save(); c.beginPath(); c.rect(PIC.x, PIC.y, PIC.w, PIC.h); c.clip();
+  if (img) {
+    const s = Math.max(PIC.w / img.width, PIC.h / img.height);
+    const w = img.width * s, h = img.height * s;
+    c.drawImage(img, PIC.x + (PIC.w - w) / 2, PIC.y + (PIC.h - h) / 2, w, h);
+    for (let i = 0; i < 2500; i++) {
+      c.fillStyle = `rgba(255,253,244,${0.25 + Math.random() * 0.4})`;
+      c.beginPath();
+      c.arc(PIC.x + Math.random() * PIC.w, PIC.y + Math.random() * PIC.h, 0.5 + Math.random() * 1.2, 0, 7);
+      c.fill();
+    }
+  }
+  c.restore();
+}
+
+const KANJI = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+function kanjiNum(n) {
+  if (n < 10) return KANJI[n];
+  return (n >= 20 ? KANJI[Math.floor(n / 10)] : "") + "十" + KANJI[n % 10];
+}
+
+// 縦書きの1文字ごとの調整（句読点は右上へ、小さい仮名は少し右上へ、伸ばし棒・かっこは横に倒す）
+const SMALL_KANA = /[ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ]/;
+function glyph(ch) {
+  if (/[、。，．]/.test(ch)) return { ch, dx: 0.52, dy: -0.52 };
+  if (SMALL_KANA.test(ch)) return { ch, dx: 0.1, dy: -0.1 };
+  if (/[ー〜～―−－…「」『』（）【】〈〉《》]/.test(ch)) return { ch, rot: Math.PI / 2 };
+  return { ch };
+}
+function putChar(c, g, cx, cy, size) {
+  c.save();
+  c.translate(cx + jit(1.5) + (g.dx ?? 0) * size, cy + jit(1.5) + (g.dy ?? 0) * size);
+  c.rotate((g.rot ?? 0) + jit(0.05));
+  c.fillStyle = PENCIL;
+  c.globalAlpha = 0.92; c.fillText(g.ch, 0, 0);
+  c.globalAlpha = 0.45; c.fillText(g.ch, 0.7, 0.4);   // えんぴつの二度なぞり
+  c.restore();
+}
+
+// 枠の中に縦に文字を並べる（入りきらないときは文字を小さくする。半角・全角のすき間は半分の高さ）
+function vtext(c, str, cx, y0, y1, maxSize) {
+  const chars = [...str];
+  const weights = chars.map((ch) => (/\s/.test(ch) ? 0.6 : 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  const size = Math.min(maxSize, (y1 - y0) / (total * 1.12));
+  const pitch = size * 1.12;
+  c.font = `${size}px ${HAND}`; c.textAlign = "center"; c.textBaseline = "middle";
+  let y = y0 + (y1 - y0 - total * pitch) / 2;
+  chars.forEach((ch, i) => {
+    const h = weights[i] * pitch;
+    if (!/\s/.test(ch)) putChar(c, glyph(ch), cx, y + h / 2, size);
+    y += h;
+  });
+}
+
+function drawSide(c, month, day, name) {
+  const { x, y, w, h } = SIDE, cx = x + w / 2;
+  const cuts = [y, y + 230, y + 460, y + 662, y + h];   // 月 / 日 / 「なまえ」/ 名前
+  handRect(c, x, y, w, h, 5);
+  for (const cy of cuts.slice(1, -1)) handLine(c, [[x, cy], [x + w, cy]], 4);
+  vtext(c, `${kanjiNum(month)}がつ`, cx, cuts[0] + 22, cuts[1] - 22, 58);
+  vtext(c, `${kanjiNum(day)}にち`, cx, cuts[1] + 22, cuts[2] - 22, 58);
+  vtext(c, "なまえ", cx, cuts[2] + 22, cuts[3] - 22, 46);
+  vtext(c, name, cx, cuts[3] + 26, cuts[4] - 26, 46);
+}
+
+// 行頭に来てはいけない文字。列の先頭に来そうなときは、前の列の最後の文字を一緒に送る
+const NO_HEAD = "、。，．」』）！？ー";
+function layoutColumns(text, rows) {
+  const cols = [];
+  for (const para of text.split("\n")) {
+    let cur = [];
+    for (const ch of [...para]) {
+      if (cur.length === rows) {
+        cols.push(cur); cur = [];
+        const prev = cols[cols.length - 1];
+        if (NO_HEAD.includes(ch) && prev.length > 1) cur.push(prev.pop());
+      }
+      cur.push(ch);
+    }
+    cols.push(cur);   // 空行は空の列になる
+  }
+  return cols;
+}
+
+function drawBody(c, raw) {
+  const { x, y, w, h } = BODY, right = x + w;
+  const text = raw.replace(/[!-\/:-@\[-`{-~]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0xFEE0))   // 半角の記号は全角にそろえる（英数字は手書き風フォントのまま）
+    .replace(/[ \t]/g, "　").replace(/\r/g, "");
+  const innerTop = y + 34, innerH = h - 60;
+  let size, pitch, colW, cap, cols;
+  for (size of [54, 46, 40, 34, 30, 26]) {   // 入りきる一番大きい文字サイズを選ぶ
+    pitch = size * 1.12; colW = size * 1.55; cap = Math.floor(w / colW);
+    cols = layoutColumns(text, Math.floor(innerH / pitch));
+    if (cols.length <= cap) break;
+  }
+  if (cols.length > cap) {
+    cols = cols.slice(0, cap);
+    cols[cap - 1][cols[cap - 1].length - 1] = "…";
+  }
+  for (let k = 1; k <= cap; k++) {   // 列の罫線（右から左へ）
+    const lx = right - k * colW;
+    if (lx > x + 6) handLine(c, [[lx, y], [lx, y + h]], 2.2, "#6b6660");
+  }
+  c.font = `${size}px ${HAND}`; c.textAlign = "center"; c.textBaseline = "middle";
+  cols.forEach((col, i) => {
+    col.forEach((ch, j) => {
+      if (ch !== "　") putChar(c, glyph(ch), right - colW * (i + 0.5), innerTop + (j + 0.5) * pitch, size);
+    });
+  });
+}
+
+// 文字フォントの読み込みを待つ（オフライン等で読めないときは代替フォントで描く）
+async function loadHandFont(sample) {
+  try {
+    await Promise.race([
+      document.fonts.load('40px "Zen Kurenaido"', sample),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {}
+}
+
+// image は AI が作った絵（Image）。null なら空の絵の枠だけ描く
+async function drawDiary({ image, text, name, date }) {
+  const [, month, day] = date.split("-").map(Number);
+  await loadHandFont(text + name + "０１２３４５６７８９一二三四五六七八九十がつにちなまえ…");
+  const c = $("diary-canvas").getContext("2d");
+  paper(c);
+  drawPicture(c, image);
+  handRect(c, 28, 28, 732, 1204, 5);
+  handLine(c, [[28, PIC.y + PIC.h], [760, PIC.y + PIC.h]], 5);
+  drawBody(c, text);
+  drawSide(c, month, day, name);
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("生成された画像を読み込めませんでした"));
+    img.src = src;
+  });
+}
+
+function renderDiaryUsage(u) {
+  const el = $("d-usage");
+  if (!u) { el.textContent = ""; return; }
+  const n = (v) => v.toLocaleString("ja-JP");
+  const cost = u.cost_usd == null
+    ? "金額は不明（料金表にないモデル）"
+    : `約 $${u.cost_usd.toFixed(4)}（約 ${(u.cost_usd * JPY_PER_USD).toFixed(2)} 円）`;
+  el.textContent = `今回の絵（${u.model}）: 入力 ${n(u.input_tokens)} ＋ 出力 ${n(u.output_tokens)} トークン → ${cost}　※1ドル=${JPY_PER_USD}円換算`;
+}
+
+async function makeDiary() {
+  const text = $("d-text").value.trim();
+  if (!text) { setStatus("にっきの ぶんしょうを入れてください", true, "d-status"); return; }
+  saveSettings();
+  const problem = settingsError();
+  if (problem) { $("settings").open = true; setStatus(problem, true, "d-status"); return; }
+
+  const buttons = [$("d-make"), $("d-again")];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    setStatus("AIが絵をかいています…（30秒ほどかかります）", false, "d-status");
+    const res = await callFunction(FN_DIARY, { text, profile: currentProfile() });
+    const image = await loadImage(res.image);
+    setStatus("にっきを かいています…", false, "d-status");
+    await drawDiary({
+      image, text,
+      name: $("d-name").value.trim() || $("baby-name").value.trim(),
+      date: $("d-date").value || jstDate.format(new Date()),
+    });
+    renderDiaryUsage(res.usage);
+    const p = res.profile;
+    const who = p ? [p.name, p.age ?? "月齢なし", p.gender ?? "性別なし"].join(" / ") : "";
+    $("d-scene").textContent = res.scene ? `使った赤ちゃんの情報: ${who}\nAIが決めた場面: ${res.scene}` : "";
+    $("d-result").hidden = false;
+    $("d-result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setStatus("", false, "d-status");
+  } catch (e) {
+    setStatus(String(e.message ?? e), true, "d-status");
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+$("d-make").addEventListener("click", makeDiary);
+$("d-again").addEventListener("click", makeDiary);   // 同じ文章でもう一度AIに描かせる（そのぶん料金がかかる）
+$("d-save").addEventListener("click", () => {
+  $("diary-canvas").toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ehon-nikki-${$("d-date").value || jstDate.format(new Date())}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+});
+$("d-text").addEventListener("input", () => {
+  $("d-count").textContent = `${$("d-text").value.length} / ${$("d-text").maxLength}`;
+});
+$("d-sample").addEventListener("click", () => {
+  $("d-text").value = "きょうは、おふろでばしゃばしゃあそびました。あひるのおもちゃをつかんで、にこにこわらっていました。";
+  $("d-date").value = jstDate.format(new Date());
+  $("d-text").dispatchEvent(new Event("input"));
+});
+$("d-date").value = jstDate.format(new Date());
 
 loadSettings();
 loadProfile();
